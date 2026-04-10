@@ -7,6 +7,7 @@ from .audio import extract_audio
 from .candidates import build_candidate_windows, cluster_candidates, enrich_candidates
 from .reactions import analyze_audience_reactions
 from .render_ffmpeg import process_clip
+from .scene_detector import detect_scene_boundaries
 from .scoring import select_top_highlights
 from .select_highlights_openai import score_candidates
 from .transcribe_assemblyai import poll_transcription, start_transcription, upload_to_assemblyai
@@ -26,7 +27,7 @@ def run_pipeline(*, video_path: str, output_dir: str, count: int, skip_asr_path:
     else:
         log("SKIP", f"Аудио уже есть: {audio_path}")
 
-    # Step 1: audience reaction zones
+    # Step 1: audience reaction zones (with reaction type classification)
     reactions_path = os.path.join(output_dir, "reactions.json")
     if os.path.exists(reactions_path):
         log("SKIP", f"Загружаю кэш реакций: {reactions_path}")
@@ -37,6 +38,12 @@ def run_pipeline(*, video_path: str, output_dir: str, count: int, skip_asr_path:
         with open(reactions_path, "w", encoding="utf-8") as f:
             json.dump(reaction_zones, f, ensure_ascii=False, indent=2)
         log("SAVE", f"Реакции сохранены: {reactions_path}")
+
+    # Filter out music_hit zones — they are almost never editorial highlights
+    before = len(reaction_zones)
+    reaction_zones = [z for z in reaction_zones if z.get("reaction_type", "crowd_noise") != "music_hit"]
+    if before != len(reaction_zones):
+        log("FILTER", f"Отброшено music_hit зон: {before - len(reaction_zones)} (осталось {len(reaction_zones)})")
 
     # Step 2: transcript
     transcript_path = skip_asr_path or os.path.join(output_dir, "transcript.json")
@@ -56,8 +63,20 @@ def run_pipeline(*, video_path: str, output_dir: str, count: int, skip_asr_path:
     words = transcript.get("words", [])
     total_ms = int(words[-1]["end"]) if words else 0
 
-    # Step 3: build candidate windows → cluster → enrich
-    raw_candidates = build_candidate_windows(reaction_zones, words)
+    # Step 3: scene boundary detection (cache-friendly)
+    scenes_path = os.path.join(output_dir, "scenes.json")
+    if os.path.exists(scenes_path):
+        log("SKIP", f"Загружаю кэш сцен: {scenes_path}")
+        with open(scenes_path, encoding="utf-8") as f:
+            scene_boundaries = json.load(f)
+    else:
+        scene_boundaries = detect_scene_boundaries(video_path)
+        with open(scenes_path, "w", encoding="utf-8") as f:
+            json.dump(scene_boundaries, f, ensure_ascii=False, indent=2)
+        log("SAVE", f"Монтажные границы сохранены: {scenes_path}")
+
+    # Step 4: build candidate windows (scene-snapped) → cluster → enrich
+    raw_candidates = build_candidate_windows(reaction_zones, words, scene_boundaries=scene_boundaries)
     clustered = cluster_candidates(raw_candidates)
     candidates = enrich_candidates(clustered, words)
 
@@ -70,7 +89,7 @@ def run_pipeline(*, video_path: str, output_dir: str, count: int, skip_asr_path:
         log("WARN", "Не найдено кандидатов — нечего отправлять в GPT.")
         return []
 
-    # Step 4: GPT scores every candidate (no selection — just evaluation)
+    # Step 5: GPT scores every candidate (no selection — just evaluation)
     scored = score_candidates(candidates)
 
     scored_path = os.path.join(output_dir, "scored.json")
@@ -78,7 +97,7 @@ def run_pipeline(*, video_path: str, output_dir: str, count: int, skip_asr_path:
         json.dump(scored, f, ensure_ascii=False, indent=2)
     log("SAVE", f"Оценки сохранены: {scored_path}")
 
-    # Step 5: deterministic selection — score, penalize, greedy dedup, top-N
+    # Step 6: deterministic selection — score, penalize, greedy dedup, top-N
     highlights = select_top_highlights(scored, candidates, total_ms, count)
 
     h_path = os.path.join(output_dir, "highlights.json")
@@ -94,7 +113,7 @@ def run_pipeline(*, video_path: str, output_dir: str, count: int, skip_asr_path:
         )
         return []
 
-    # Step 6: render clips
+    # Step 7: render clips
     results: list[str] = []
     for i, h in enumerate(highlights, 1):
         clip = process_clip(video_path, h, words, output_dir, i, len(highlights))

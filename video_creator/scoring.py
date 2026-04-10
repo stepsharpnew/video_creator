@@ -10,6 +10,7 @@ from .config import (
     OVERLAP_REJECT_RATIO,
     PAYOFF_PENALTY,
     REACTION_AT_PROXIMITY_MS,
+    REACTION_TYPE_WEIGHTS,
     SCORE_W_CLARITY,
     SCORE_W_HOOK,
     SCORE_W_NOVELTY,
@@ -93,6 +94,7 @@ def _merge_scored_with_candidates(scored: list[dict], candidates: list[dict]) ->
             "transcript_chunk": orig.get("transcript_chunk", ""),
             "reaction_at_ms": orig.get("reaction_at_ms", s.get("suggested_start_ms", 0)),
             "peak_intensity": orig.get("peak_intensity", 0),
+            "reaction_type": orig.get("reaction_type", "crowd_noise"),
         })
     return merged
 
@@ -109,8 +111,14 @@ def _compute_base_scores(items: list[dict]) -> list[dict]:
         clarity = _clamp(s.get("transcript_clarity_score", 1))
         title_q = _clamp(s.get("title_quality_score", 1))
 
+        # Multiplicative reaction type modifier — scales the reaction component
+        # before it enters the weighted sum. music_hit barely counts; laugh is full weight.
+        rtype = s.get("reaction_type", "crowd_noise")
+        type_mult = REACTION_TYPE_WEIGHTS.get(rtype, REACTION_TYPE_WEIGHTS["crowd_noise"])
+        reaction_adjusted = reaction * type_mult
+
         base = (
-            reaction * SCORE_W_REACTION
+            reaction_adjusted * SCORE_W_REACTION
             + hook * SCORE_W_HOOK
             + self_cont * SCORE_W_SELF_CONTAINED
             + clarity * SCORE_W_CLARITY
@@ -129,10 +137,14 @@ def _compute_base_scores(items: list[dict]) -> list[dict]:
             "transcript_chunk": s.get("transcript_chunk", ""),
             "reaction_at_ms": int(s.get("reaction_at_ms", 0)),
             "peak_intensity": float(s.get("peak_intensity", 0)),
+            "reaction_type": rtype,
             "base_score": round(base, 3),
             "final_score": round(base, 3),
             "scores": {
                 "reaction": reaction,
+                "reaction_adjusted": round(reaction_adjusted, 3),
+                "reaction_type": rtype,
+                "reaction_type_mult": type_mult,
                 "hook": hook,
                 "self_contained": self_cont,
                 "clarity": clarity,

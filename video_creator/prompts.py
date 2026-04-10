@@ -122,12 +122,14 @@ def format_candidates_block(candidates: list[dict]) -> str:
             for p in c.get("pause_gaps", [])
         ) or "нет заметных пауз"
 
+        rtype = c.get("reaction_type", "crowd_noise")
         blocks.append(
             f"── Кандидат {i} ──\n"
             f"Окно: {fmt_time(c['win_start_ms'])}–{fmt_time(c['win_end_ms'])} "
             f"({(c['win_end_ms'] - c['win_start_ms']) // 1000}с)\n"
             f"reaction_at_ms: {c.get('reaction_at_ms', '?')}\n"
             f"reaction_strength: {c['peak_intensity']:.0%}\n"
+            f"reaction_type: {rtype}\n"
             f"Реакции: {reactions_str}\n"
             f"reaction_overlaps: {overlaps_str}\n"
             f"word_count: {c.get('word_count', '?')}  estimated_wpm: {c.get('estimated_wpm', '?')}\n"

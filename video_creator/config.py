@@ -58,6 +58,22 @@ TRANSCRIPT_NOISE_PATTERNS: list[str] = [
     "шум",
 ]
 
+# ── Scene boundary detection ──
+SCENE_THRESHOLD = 0.35          # FFmpeg scene change score threshold (0..1); lower = more cuts
+SCENE_SNAP_LOOK_BACK_MS = 12_000  # max distance to snap win_start to a scene boundary
+SCENE_SNAP_LOOK_AHEAD_MS = 5_000  # max distance to snap win_end to a scene boundary
+
+# ── Reaction type classifier ──
+# Multiplier applied to reaction_score component in final scoring.
+# Keeps 0.30×reaction weight intact but scales the input reaction value.
+REACTION_TYPE_WEIGHTS: dict[str, float] = {
+    "laugh":       1.00,   # best signal — direct comedic payoff
+    "applause":    0.80,   # good, but can be polite/outro applause
+    "crowd_noise": 0.55,   # noisy crowd, uncertain quality
+    "music_hit":   0.15,   # musical stab — almost never a highlight anchor
+    "silence":     0.10,   # edge case / detection artefact
+}
+
 # ── Score aggregation weights (must sum to 1.0) ──
 SCORE_W_REACTION = 0.30
 SCORE_W_HOOK = 0.20

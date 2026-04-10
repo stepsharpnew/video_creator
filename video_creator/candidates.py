@@ -9,7 +9,10 @@ from .config import (
     MAX_CLIP_SEC,
     MIN_CLIP_SEC,
     PAUSE_GAP_MS,
+    SCENE_SNAP_LOOK_AHEAD_MS,
+    SCENE_SNAP_LOOK_BACK_MS,
 )
+from .scene_detector import find_nearest_boundary_after, find_nearest_boundary_before
 from .utils import filter_noise_words, fmt_time, log
 
 
@@ -95,23 +98,55 @@ def _reaction_overlaps(reactions: list[dict], wds: list[dict]) -> list[dict]:
 def build_candidate_windows(
     reaction_zones: list[dict],
     words: list[dict],
+    scene_boundaries: list[dict] | None = None,
 ) -> list[dict]:
+    """
+    Build candidate windows around each reaction zone.
+    If scene_boundaries is provided, snap win_start / win_end to the
+    nearest scene cut instead of using fixed offsets — yielding
+    cleaner editorial boundaries.
+    """
     total_ms = int(words[-1]["end"]) if words else 0
     candidates: list[dict] = []
+    scenes = scene_boundaries or []
 
     for z in reaction_zones:
         r_start = int(z["start_ms"])
         r_end = int(z["end_ms"])
         intensity = float(z["intensity"])
+        reaction_type = z.get("reaction_type", "crowd_noise")
+        type_confidence = float(z.get("type_confidence", 0.5))
 
-        win_start = max(0, r_start - CANDIDATE_SETUP_MS)
-        win_end = min(total_ms, r_end + CANDIDATE_TAIL_MS) if total_ms else r_end + CANDIDATE_TAIL_MS
+        # ── win_start: prefer nearest scene cut before reaction ──
+        raw_start = max(0, r_start - CANDIDATE_SETUP_MS)
+        snap_start = find_nearest_boundary_before(scenes, r_start, SCENE_SNAP_LOOK_BACK_MS)
+        if snap_start is not None:
+            # use scene cut only if it's not earlier than the raw fallback
+            win_start = max(raw_start, snap_start)
+        else:
+            win_start = raw_start
+
+        # ── win_end: prefer nearest scene cut after reaction ──
+        raw_end = min(total_ms, r_end + CANDIDATE_TAIL_MS) if total_ms else r_end + CANDIDATE_TAIL_MS
+        snap_end = find_nearest_boundary_after(scenes, r_end, SCENE_SNAP_LOOK_AHEAD_MS)
+        if snap_end is not None:
+            win_end = min(raw_end + CANDIDATE_TAIL_MS, snap_end)
+            win_end = max(win_end, raw_end)  # never shorten below raw
+        else:
+            win_end = raw_end
 
         candidates.append({
             "win_start_ms": win_start,
             "win_end_ms": win_end,
-            "reactions": [{"start_ms": r_start, "end_ms": r_end, "intensity": intensity}],
+            "reactions": [{
+                "start_ms": r_start,
+                "end_ms": r_end,
+                "intensity": intensity,
+                "reaction_type": reaction_type,
+                "type_confidence": type_confidence,
+            }],
             "peak_intensity": intensity,
+            "reaction_type": reaction_type,
         })
 
     candidates.sort(key=lambda c: c["win_start_ms"])
@@ -129,7 +164,9 @@ def cluster_candidates(candidates: list[dict]) -> list[dict]:
         if c["win_start_ms"] - prev["win_end_ms"] <= CANDIDATE_CLUSTER_GAP_MS:
             prev["win_end_ms"] = max(prev["win_end_ms"], c["win_end_ms"])
             prev["reactions"].extend(c["reactions"])
-            prev["peak_intensity"] = max(prev["peak_intensity"], c["peak_intensity"])
+            if c["peak_intensity"] > prev["peak_intensity"]:
+                prev["peak_intensity"] = c["peak_intensity"]
+                prev["reaction_type"] = c.get("reaction_type", prev.get("reaction_type", "crowd_noise"))
         else:
             merged.append(_copy_candidate(c))
 
@@ -192,6 +229,7 @@ def enrich_candidates(candidates: list[dict], words: list[dict]) -> list[dict]:
             "win_end_ms": win_end,
             "reactions": c["reactions"],
             "peak_intensity": c["peak_intensity"],
+            "reaction_type": c.get("reaction_type", "crowd_noise"),
             "reaction_at_ms": reaction_at_ms,
             "transcript_chunk": transcript_chunk,
             "utterances": utterances,
@@ -225,4 +263,5 @@ def _copy_candidate(c: dict) -> dict:
         "win_end_ms": c["win_end_ms"],
         "reactions": list(c["reactions"]),
         "peak_intensity": c["peak_intensity"],
+        "reaction_type": c.get("reaction_type", "crowd_noise"),
     }

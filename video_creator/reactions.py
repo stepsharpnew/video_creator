@@ -10,11 +10,15 @@ from .config import (
     REACTION_MERGE_GAP,
     REACTION_THRESHOLD,
 )
+from .reaction_classifier import classify_zones_bulk
 from .utils import fmt_time, log
 
 
 def analyze_audience_reactions(audio_path: str) -> list[dict]:
-    """Находит пики громкости (смех/аплодисменты) через RMS/mean-abs анализ аудио."""
+    """
+    Detect loud reaction zones by RMS/mean-abs analysis, then classify
+    each zone's type (laugh / applause / music_hit / crowd_noise / silence).
+    """
     log("REACT", "Анализирую аудио — ищу реакции зала...")
 
     cmd = [
@@ -82,10 +86,20 @@ def analyze_audience_reactions(audio_path: str) -> list[dict]:
     zones.append(_make_zone(z_start, z_end, z_max, max_val))
     zones.sort(key=lambda z: z["intensity"], reverse=True)
 
+    # Classify reaction types using spectral analysis
+    log("REACT", "Классифицирую типы реакций...")
+    zones = classify_zones_bulk(audio_path, zones, sample_rate=ANALYSIS_SAMPLE_RATE)
+
     log("REACT", f"Найдено {len(zones)} зон реакции зала (топ-15):")
     for i, z in enumerate(zones[:15], 1):
         dur = (z["end_ms"] - z["start_ms"]) // 1000
-        log("REACT", f"  {i:2}. [{fmt_time(z['start_ms'])}] {dur}с  сила: {z['intensity']:.0%}")
+        rtype = z.get("reaction_type", "?")
+        conf = z.get("type_confidence", 0)
+        log(
+            "REACT",
+            f"  {i:2}. [{fmt_time(z['start_ms'])}] {dur}с  "
+            f"сила: {z['intensity']:.0%}  тип: {rtype} ({conf:.0%})",
+        )
 
     return zones
 
@@ -106,4 +120,3 @@ def _make_zone(start: int, end: int, peak: float, max_val: float) -> dict:
         "end_ms": end + int(ANALYSIS_WINDOW_SEC * 1000),
         "intensity": round(peak / max_val, 2) if max_val > 0 else 0,
     }
-
